@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Hollow Purple</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Courier New', sans-serif;
+        }
+
+        #video-container {
+            position: absolute;
+            bottom: 3%;
+            left: 50%;
+            transform: translateX(-50%) scaleX(-1);
+            width: 60vw;
+            max-width: 300px;
+            height: 30vh;
+            border: 2px solid rgba(255, 255, 255, 0.15);
+            z-index: 20;
+            background-color: #000;
+            border-radius: 18px;
+            overflow: hidden;
+            box-shadow: 0 0 25px rgba(0, 0, 0, 0.7);
+        }
+
+
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            opacity: 0.8;
+        }
+
+        #output_canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+
+        #grain {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 5;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.08'/%3E%3C/svg%3E");
+        }
+    </style>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"
+        crossorigin="anonymous"></script>
+</head>
+
+<body>
+
+    <div id="grain"></div>
+
+    <div id="video-container">
+        <video class="input_video"></video>
+        <canvas id="output_canvas"></canvas>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import {EffectComposer} from 'three/addons/postprocessing/EffectComposer.js';
+        import {RenderPass} from 'three/addons/postprocessing/RenderPass.js';
+        import {UnrealBloomPass} from 'three/addons/postprocessing/UnrealBloomPass.js';
+-
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.z = 55;
+
+        const renderer = new THREE.WebGLRenderer({antialias: true, alpha: true});
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        document.body.appendChild(renderer.domElement);
+
+        const composer = new EffectComposer(renderer);
+        composer.addPass(new RenderPass(scene, camera));
+        const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 2.0, 0.4, 0.85);
+        composer.addPass(bloomPass);
+
+        const COUNT = 15000;
+        const geometry = new THREE.BufferGeometry();
+        const positions = new Float32Array(COUNT * 3);
+        const colors = new Float32Array(COUNT * 3);
+        const sizes = new Float32Array(COUNT);
+
+        const targetPositions = new Float32Array(COUNT * 3);
+        const targetColors = new Float32Array(COUNT * 3);
+        const targetSizes = new Float32Array(COUNT);
+
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+        geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+
+        const particles = new THREE.Points(geometry, new THREE.PointsMaterial({
+            size: 0.4,
+            vertexColors: true,
+            blending: THREE.AdditiveBlending,
+            transparent: true,
+            depthWrite: false
+        }));
+        scene.add(particles);
+
+        let fingerPositions = {left: null, right: null};
+        let isMerging = false;
+        let mergeProgress = 0;
+        let isMerged = false;
+        let mergeHoldTime = 0;
+        const MERGE_HOLD_THRESHOLD = 1500;
+
+        function getBlueEnergy(i, pos) {
+            const COUNT_PER_FINGER = COUNT / 2;
+            if (i < COUNT_PER_FINGER * 0.15) {
+                const r = Math.random() * 8;
+                const theta = Math.random() * 6.28;
+                const phi = Math.acos(2 * Math.random() - 1);
+                return {
+                    x: pos.x + r * Math.sin(phi) * Math.cos(theta),
+                    y: pos.y + r * Math.sin(phi) * Math.sin(theta),
+                    z: r * Math.cos(phi),
+                    r: 0.1, g: 0.5, b: 1.0, s: 2.0
+                };
+            } else {
+                const angle = (i / COUNT_PER_FINGER) * Math.PI * 8;
+                const radius = 10 + (i % 50) * 0.3;
+                const height = (Math.random() - 0.5) * 15;
+                return {
+                    x: pos.x + radius * Math.cos(angle),
+                    y: pos.y + radius * Math.sin(angle),
+                    z: height,
+                    r: 0.2, g: 0.6, b: 1.0, s: 0.8
+                };
+            }
+        }
+
+        function getRedEnergy(i, pos) {
+            const COUNT_PER_FINGER = COUNT / 2;
+            if (i < COUNT_PER_FINGER * 0.15) {
+                const r = Math.random() * 8;
+                const theta = Math.random() * 6.28;
+                const phi = Math.acos(2 * Math.random() - 1);
+                return {
+                    x: pos.x + r * Math.sin(phi) * Math.cos(theta),
+                    y: pos.y + r * Math.sin(phi) * Math.sin(theta),
+                    z: r * Math.cos(phi),
+                    r: 1.0, g: 0.1, b: 0.2, s: 2.0
+                };
+            } else {
+                const angle = (i / COUNT_PER_FINGER) * Math.PI * 8;
+                const radius = 10 + (i % 50) * 0.3;
+                const height = (Math.random() - 0.5) * 15;
+                return {
+                    x: pos.x + radius * Math.cos(angle),
+                    y: pos.y + radius * Math.sin(angle),
+                    z: height,
+                    r: 1.0, g: 0.2, b: 0.2, s: 0.8
+                };
+            }
+        }
+
+        function getPurpleEnergy(i, centerPos, progress) {
+            if (i < COUNT * 0.2) {
+                const r = Math.random() * 12 * (1 + progress);
+                const theta = Math.random() * 6.28;
+                const phi = Math.acos(2 * Math.random() - 1);
+                return {
+                    x: centerPos.x + r * Math.sin(phi) * Math.cos(theta),
+                    y: centerPos.y + r * Math.sin(phi) * Math.sin(theta),
+                    z: r * Math.cos(phi),
+                    r: 0.6, g: 0.2, b: 1.0, s: 2.5 * (1 + progress * 0.5)
+                };
+            } else {
+                const angle = (i / COUNT) * Math.PI * 12;
+                const radius = 15 + (i % 100) * 0.5 + progress * 20;
+                const height = (Math.random() - 0.5) * (20 + progress * 15);
+                return {
+                    x: centerPos.x + radius * Math.cos(angle),
+                    y: centerPos.y + radius * Math.sin(angle),
+                    z: height,
+                    r: 0.5 + progress * 0.3, g: 0.1, b: 0.9 + progress * 0.1, s: 1.0 + progress * 0.5
+                };
+            }
+        }
+
+        const videoElement = document.querySelector('.input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+
+        const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        hands.setOptions({maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.7, minTrackingConfidence: 0.7});
+
+        let lastFingerCount = 0;
+        let lastMergeCheck = Date.now();
+
+        hands.onResults((results) => {
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+            let detectedFingers = [];
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                results.multiHandLandmarks.forEach((lm, idx) => {
+                    drawConnectors(canvasCtx, lm, HAND_CONNECTIONS, {color: 'rgba(255,255,255,0.3)', lineWidth: 2});
+                    drawLandmarks(canvasCtx, lm, {color: 'rgba(255,255,255,0.4)', lineWidth: 1, radius: 2});
+
+                    const indexTip = lm[8];
+                    detectedFingers.push({
+                        x: (indexTip.x - 0.5) * 100,
+                        y: -(indexTip.y - 0.5) * 100,
+                        handIdx: idx
+                    });
+                });
+            }
+
+            const currentTime = Date.now();
+
+            if (detectedFingers.length === 1) {
+                fingerPositions.left = detectedFingers[0];
+                fingerPositions.right = null;
+                isMerging = false;
+                mergeHoldTime = 0;
+
+                if (isMerged) {
+                } else {
+                    isMerged = false;
+                }
+            } else if (detectedFingers.length === 2) {
+                fingerPositions.left = detectedFingers[0];
+                fingerPositions.right = detectedFingers[1];
+
+                const dx = fingerPositions.right.x - fingerPositions.left.x;
+                const dy = fingerPositions.right.y - fingerPositions.left.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+
+                if (distance < 25 && !isMerged) {
+                    if (!isMerging) {
+                        isMerging = true;
+                        lastMergeCheck = currentTime;
+                    }
+
+                    mergeHoldTime += (currentTime - lastMergeCheck);
+                    lastMergeCheck = currentTime;
+
+                    mergeProgress = Math.min(mergeHoldTime / MERGE_HOLD_THRESHOLD, 1);
+
+                    if (mergeProgress >= 1 && !isMerged) {
+                        isMerged = true;
+                        bloomPass.strength = 3.5;
+                    }
+                } else {
+                    if (!isMerged) {
+                        isMerging = false;
+                        mergeHoldTime = 0;
+                        mergeProgress = 0;
+                    }
+                }
+            } else {
+                fingerPositions.left = null;
+                fingerPositions.right = null;
+                if (!isMerged) {
+                    isMerging = false;
+                    mergeHoldTime = 0;
+                    mergeProgress = 0;
+                }
+            }
+
+            lastFingerCount = detectedFingers.length;
+            updateParticles();
+        });
+
+        function updateParticles() {
+            const COUNT_PER_FINGER = COUNT / 2;
+
+            if (isMerged) {
+                const centerX = fingerPositions.left ? fingerPositions.left.x : 0;
+                const centerY = fingerPositions.left ? fingerPositions.left.y : 0;
+
+                for (let i = 0; i < COUNT; i++) {
+                    const p = getPurpleEnergy(i, {x: centerX, y: centerY}, 1);
+                    targetPositions[i * 3] = p.x;
+                    targetPositions[i * 3 + 1] = p.y;
+                    targetPositions[i * 3 + 2] = p.z;
+                    targetColors[i * 3] = p.r;
+                    targetColors[i * 3 + 1] = p.g;
+                    targetColors[i * 3 + 2] = p.b;
+                    targetSizes[i] = p.s;
+                }
+                bloomPass.strength = 3.5;
+            } else if (isMerging && mergeProgress > 0) {
+                const centerX = (fingerPositions.left.x + fingerPositions.right.x) / 2;
+                const centerY = (fingerPositions.left.y + fingerPositions.right.y) / 2;
+
+                for (let i = 0; i < COUNT; i++) {
+                    if (i < COUNT_PER_FINGER) {
+                        const blueP = getBlueEnergy(i, fingerPositions.left);
+                        const purpleP = getPurpleEnergy(i, {x: centerX, y: centerY}, mergeProgress);
+
+                        targetPositions[i * 3] = blueP.x + (purpleP.x - blueP.x) * mergeProgress;
+                        targetPositions[i * 3 + 1] = blueP.y + (purpleP.y - blueP.y) * mergeProgress;
+                        targetPositions[i * 3 + 2] = blueP.z + (purpleP.z - blueP.z) * mergeProgress;
+                        targetColors[i * 3] = blueP.r + (purpleP.r - blueP.r) * mergeProgress;
+                        targetColors[i * 3 + 1] = blueP.g + (purpleP.g - blueP.g) * mergeProgress;
+                        targetColors[i * 3 + 2] = blueP.b + (purpleP.b - blueP.b) * mergeProgress;
+                        targetSizes[i] = blueP.s + (purpleP.s - blueP.s) * mergeProgress;
+                    } else {
+                        const redP = getRedEnergy(i - COUNT_PER_FINGER, fingerPositions.right);
+                        const purpleP = getPurpleEnergy(i, {x: centerX, y: centerY}, mergeProgress);
+
+                        targetPositions[i * 3] = redP.x + (purpleP.x - redP.x) * mergeProgress;
+                        targetPositions[i * 3 + 1] = redP.y + (purpleP.y - redP.y) * mergeProgress;
+                        targetPositions[i * 3 + 2] = redP.z + (purpleP.z - redP.z) * mergeProgress;
+                        targetColors[i * 3] = redP.r + (purpleP.r - redP.r) * mergeProgress;
+                        targetColors[i * 3 + 1] = redP.g + (purpleP.g - redP.g) * mergeProgress;
+                        targetColors[i * 3 + 2] = redP.b + (purpleP.b - redP.b) * mergeProgress;
+                        targetSizes[i] = redP.s + (purpleP.s - redP.s) * mergeProgress;
+                    }
+                }
+                bloomPass.strength = 2.0 + mergeProgress * 1.5;
+            } else if (fingerPositions.left && fingerPositions.right) {
+                for (let i = 0; i < COUNT; i++) {
+                    let p;
+                    if (i < COUNT_PER_FINGER) {
+                        p = getBlueEnergy(i, fingerPositions.left);
+                    } else {
+                        p = getRedEnergy(i - COUNT_PER_FINGER, fingerPositions.right);
+                    }
+                    targetPositions[i * 3] = p.x;
+                    targetPositions[i * 3 + 1] = p.y;
+                    targetPositions[i * 3 + 2] = p.z;
+                    targetColors[i * 3] = p.r;
+                    targetColors[i * 3 + 1] = p.g;
+                    targetColors[i * 3 + 2] = p.b;
+                    targetSizes[i] = p.s;
+                }
+                bloomPass.strength = 2.0;
+            } else if (fingerPositions.left) {
+                for (let i = 0; i < COUNT; i++) {
+                    if (i < COUNT_PER_FINGER) {
+                        const p = getBlueEnergy(i, fingerPositions.left);
+                        targetPositions[i * 3] = p.x;
+                        targetPositions[i * 3 + 1] = p.y;
+                        targetPositions[i * 3 + 2] = p.z;
+                        targetColors[i * 3] = p.r;
+                        targetColors[i * 3 + 1] = p.g;
+                        targetColors[i * 3 + 2] = p.b;
+                        targetSizes[i] = p.s;
+                    } else {
+                        targetPositions[i * 3] = 0;
+                        targetPositions[i * 3 + 1] = 0;
+                        targetPositions[i * 3 + 2] = 0;
+                        targetSizes[i] = 0;
+                    }
+                }
+                bloomPass.strength = 1.8;
+            } else {
+                for (let i = 0; i < COUNT; i++) {
+                    targetSizes[i] = 0;
+                }
+                bloomPass.strength = 1.0;
+            }
+        }
+
+        const cameraUtils = new Camera(videoElement, {
+            onFrame: async () => {
+                canvasElement.width = videoElement.videoWidth;
+                canvasElement.height = videoElement.videoHeight;
+                await hands.send({image: videoElement});
+            }, width: 640, height: 480
+        });
+        cameraUtils.start();
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const pos = particles.geometry.attributes.position.array;
+            const col = particles.geometry.attributes.color.array;
+            const siz = particles.geometry.attributes.size.array;
+
+            for (let i = 0; i < COUNT * 3; i++) {
+                pos[i] += (targetPositions[i] - pos[i]) * 0.08;
+                col[i] += (targetColors[i] - col[i]) * 0.08;
+            }
+            for (let i = 0; i < COUNT; i++) {
+                siz[i] += (targetSizes[i] - siz[i]) * 0.08;
+            }
+
+            particles.geometry.attributes.position.needsUpdate = true;
+            particles.geometry.attributes.color.needsUpdate = true;
+            particles.geometry.attributes.size.needsUpdate = true;
+
+            if (isMerged) {
+                particles.rotation.z += 0.02;
+                particles.rotation.y += 0.01;
+            } else {
+                particles.rotation.y += 0.005;
+            }
+
+            composer.render();
+        }
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+
+</html>
